@@ -482,8 +482,6 @@ mod tests {
     use crate::data_source::DsError;
     use parking_lot::RwLock;
 
-    // Use std for testing only.
-    extern crate std;
     use std::vec::Vec;
 
     /// A proxy data soucre for testing.
