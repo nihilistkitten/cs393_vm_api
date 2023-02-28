@@ -172,9 +172,6 @@ impl<'a, const N_PAGES: usize, const PAGE_SIZE: usize, const MIN_GAP_SIZE: usize
     ///
     /// # Errors
     /// If the desired mapping is invalid.
-    ///
-    /// # Panics
-    /// todo
     pub fn add_mapping<D: DataSource>(
         &mut self,
         source: &'a D,
@@ -193,9 +190,6 @@ impl<'a, const N_PAGES: usize, const PAGE_SIZE: usize, const MIN_GAP_SIZE: usize
     ///
     /// # Errors
     /// If there is insufficient room subsequent to `start`.
-    ///
-    /// # Panics
-    /// todo
     pub fn add_mapping_at<D: DataSource>(
         &mut self,
         addr: VirtualAddress,
@@ -218,9 +212,6 @@ impl<'a, const N_PAGES: usize, const PAGE_SIZE: usize, const MIN_GAP_SIZE: usize
     ///
     /// # Errors
     /// If the mapping could not be removed.
-    ///
-    /// # Panics
-    /// todo
     pub fn remove_mapping(&mut self, start: VirtualAddress) -> Result<(), AsError> {
         if !self.mappings.remove(&MapEntry {
             addr: start,
@@ -239,15 +230,19 @@ impl<'a, const N_PAGES: usize, const PAGE_SIZE: usize, const MIN_GAP_SIZE: usize
     /// # Errors
     /// If this `VirtualAddress` does not have a valid mapping in &self,
     /// or if this `AccessType` is not permitted by the mapping
-    ///
-    /// # Panics
-    /// todo
+    #[must_use]
     pub fn get_source_for_addr<D: DataSource>(
         &self,
         addr: VirtualAddress,
         access_type: Flags,
-    ) -> Result<(&D, usize), AsError> {
-        todo!();
+    ) -> Option<&dyn DataSource> {
+        self.mappings
+            .get(&MapEntry {
+                addr,
+                length: PAGE_SIZE,
+                source: None,
+            })
+            .and_then(|m| m.source)
     }
 }
 
@@ -334,7 +329,6 @@ mod flags {
         flag_toggle!(private, toggle_private, set_private);
         flag_toggle!(shared, toggle_shared, set_shared);
 
-        #[must_use]
         /// Combine two `FlagBuilder`s by boolean or-ing each of their flags.
         ///
         /// This is, somewhat counter-intuitively, named `and`, so that the following code reads
@@ -347,6 +341,7 @@ mod flags {
         /// let new = read.and(execute);
         /// assert_eq!(new, Flags::build().toggle_read().toggle_execute());
         /// ```
+        #[must_use]
         pub const fn and(self, other: Self) -> Self {
             let read = self.read || other.read;
             let write = self.write || other.write;
@@ -365,7 +360,6 @@ mod flags {
             }
         }
 
-        #[must_use]
         /// Turn off all flags in self that are on in other.
         ///
         /// You can think of this as `self &! other` on each field.
@@ -377,6 +371,7 @@ mod flags {
         /// let new = read_execute.but_not(execute);
         /// assert_eq!(new, Flags::build().toggle_read());
         /// ```
+        #[must_use]
         pub const fn but_not(self, other: Self) -> Self {
             let read = self.read && !other.read;
             let write = self.write && !other.write;
@@ -496,15 +491,6 @@ mod tests {
     struct ProxyDs<const CAPACITY: usize> {
         buffer: RwLock<[u8; CAPACITY]>,
     }
-
-    impl<const CAPACITY: usize> PartialEq for ProxyDs<CAPACITY> {
-        fn eq(&self, other: &Self) -> bool {
-            // SAFETY: cannot deadlock since we can have multiple readers
-            *self.buffer.read() == *other.buffer.read()
-        }
-    }
-
-    impl<const CAPACITY: usize> Eq for ProxyDs<CAPACITY> {}
 
     impl<const CAPACITY: usize> ProxyDs<CAPACITY> {
         const fn new() -> Self {
