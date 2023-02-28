@@ -98,47 +98,60 @@ impl<'a, const N_PAGES: usize, const PAGE_SIZE: usize, const MIN_GAP_SIZE: usize
         N_PAGES * PAGE_SIZE
     }
 
-    /// Create an iterator over the bounds of free regions.
-    fn free_regions(&'a self) -> impl Iterator<Item = (VirtualAddress, VirtualAddress)> + 'a {
-        let starts = core::iter::once(0).chain(self.mappings.iter().map(MapEntry::end));
-        let ends = self
-            .mappings
-            .iter()
-            .map(|m| m.addr)
-            .chain(core::iter::once(Self::total_capacity()));
-
-        starts.zip(ends)
+    // Check if there is space after addr for a page of the given length, before the given address.
+    const fn is_space_before(target: VirtualAddress, length: usize, bound: VirtualAddress) -> bool {
+        // first ensure subtraction won't overflow
+        bound > target + length && bound - target - length > MIN_GAP_SIZE
     }
 
-    /// Check if there is space for a mapping of length at addr.
+    /// Check if there is space at addr.
     fn is_space_at(&self, addr: VirtualAddress, length: usize) -> bool {
-        // Get iterators over all the starts and ends of free blocks.
-        self.free_regions()
-            // Find the first free region which ends after addr.
-            .find(|(_, e)| *e > addr)
-            // Check whether it has room.
-            .map_or(false, |(s, e)| {
-                s + MIN_GAP_SIZE <= addr && addr + length + MIN_GAP_SIZE < e
-            })
+        // Find the first mapping ending after addr, and check that there is enough space before it.
+        let iter = self.mappings.iter();
+
+        let starts = core::iter::once(0).chain(self.mappings.iter().map(|m| m.addr));
+        let ends = self.mappings.iter().map(|m| m.end().chain(Self::total_capacity())
+
+        let (lower_bound, upper_bound) = self
+            .mappings
+            .iter()
+            .zip(self.mappings.iter().skip(1))
+            .find(|(_, m)| m.end() > addr)
+            // If we don't find anything, then no mapping ends after `addr`, so we need to check
+            // that there's room before the end of the address space.
+            .map_or(
+                (
+                    // If there is a last item, then use its end as the lower bound; otherwise use
+                    // 0.
+                    self.mappings.last().map_or_else(0, |m| m.end()),
+                    // Here we didn't find any upper bound, so always use the total capacity as the
+                    // upper bound.
+                    Self::total_capacity(),
+                ),
+                // Here we found both items as desired, so
+                |(m1, m2)| (m1.end(), m2.addr),
+            );
+
+        Self::is_space_before(addr, length, upper_bound)
     }
 
     /// Find the space for a page of the given length.
     fn find_space_for(&self, length: usize) -> Option<VirtualAddress> {
         // TODO: perf
         //
-        // Get iterators over all the starts and ends of free blocks.
-        // Find the first one with enough space.
-        self.free_regions().find_map(|(s, e)| {
-            // The smallest starting address in this range.
-            let start = (s + MIN_GAP_SIZE).next_multiple_of(PAGE_SIZE);
-            let end = e - MIN_GAP_SIZE;
-            if start > end || end - start < length {
-                // not enough space
-                None
-            } else {
-                Some(start)
-            }
-        })
+        // Search the following addresses:
+        //
+        // 1. PAGE_SIZE, i.e., the location of the first possible page, since we never allocate
+        //    page 0.
+        // 2. For each preexisting mapping, the smallest PAGE_SIZE-aligned address which is at
+        //    least MIN_GAP_SIZE larger than the mapping.
+        core::iter::once(PAGE_SIZE)
+            .chain(
+                self.mappings
+                    .iter()
+                    .map(|m| (m.end() + MIN_GAP_SIZE).next_multiple_of(PAGE_SIZE)),
+            )
+            .find(|&a| self.is_space_at(a, length))
     }
 
     /// An _expensive_ check to ensure that the `AddressSpace` is in a valid state, i.e.:
@@ -153,15 +166,18 @@ impl<'a, const N_PAGES: usize, const PAGE_SIZE: usize, const MIN_GAP_SIZE: usize
         let iter_1 = self.mappings.iter();
         let iter_2 = self.mappings.iter().skip(1);
 
-        // There is at least `MIN_GAP_SIZE` space between each mapping.
         for (m1, m2) in iter_1.zip(iter_2) {
             // mappings.iter is in-order, so here we're guaranteed:
             // m1.addr <= m2.addr
             // there is no m3 s.t. m1.addr < m3.addr < m2.addr
+            #[cfg(test)]
+            {
+                std::dbg!(&m1);
+                std::dbg!(&m2);
+            }
             assert!(m1.end() + MIN_GAP_SIZE <= m2.addr);
         }
 
-        // All mappings are `PAGE_SIZE`-aligned.
         for m in self.mappings.iter() {
             assert!(m.addr % PAGE_SIZE == 0);
         }
@@ -583,6 +599,7 @@ mod tests {
 
         let addr = space.add_mapping(&source, length)?;
 
+        std::dbg!(&space);
         space.assert_valid();
 
         assert_ne!(addr, 0);
@@ -619,6 +636,7 @@ mod tests {
 
         for l in 1..=N_ADDRS {
             addrs.push(space.add_mapping(&source, l)?);
+            std::dbg!(&space);
             space.assert_valid();
         }
 
@@ -636,8 +654,8 @@ mod tests {
     }
 
     #[test]
-    fn add_mapping_at_works() -> Result<(), AsError> {
-        let mut space = AddressSpace::<6, 20>::new("test space");
+    fn add_mapping_at_oks() -> Result<(), AsError> {
+        let mut space = AddressSpace::<10, 20>::new("test space");
         let source = ProxyDs::<16>::new();
 
         space.mappings.insert(MapEntry {
@@ -646,21 +664,18 @@ mod tests {
             source: Some(&source),
         });
 
-        let addr = 60;
-        let length = 20;
-
-        space.add_mapping_at(addr, &source, length)?;
+        space.add_mapping_at(40, &source, 20)?;
         let mapping = space.mappings.iter().nth(1).expect("second mapping exists");
 
-        assert_eq!(mapping.addr, addr);
-        assert_eq!(mapping.length, length);
+        assert_eq!(mapping.addr, 40);
+        assert_eq!(mapping.length, 20);
         space.assert_valid();
 
         Ok(())
     }
 
     #[test]
-    fn add_mapping_at_err_works() {
+    fn add_mapping_at_errs() {
         let mut space = AddressSpace::<10, 20>::new("test space");
         let source = ProxyDs::<16>::new();
 
