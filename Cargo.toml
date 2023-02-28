@@ -6,3 +6,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+scapegoat = "2.3.0"
+
+[dev-dependencies]
+parking_lot = "0.12.1"
