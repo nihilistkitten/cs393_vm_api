@@ -41,7 +41,8 @@ impl MapEntry<'_> {
 
 impl PartialEq for MapEntry<'_> {
     fn eq(&self, other: &Self) -> bool {
-        self.addr == other.addr && self.length == other.length
+        // Only compares addresses so we can use the `remove` API of `SgSet`.
+        self.addr == other.addr
     }
 }
 
@@ -180,11 +181,11 @@ impl<'a, const N_PAGES: usize, const PAGE_SIZE: usize, const MIN_GAP_SIZE: usize
         length: usize,
     ) -> Result<VirtualAddress, AsError> {
         let addr = self.find_space_for(length).ok_or("no space available")?;
-        self.mappings.insert(MapEntry {
+        debug_assert!(self.mappings.insert(MapEntry {
             addr,
             length,
             source: Some(source),
-        });
+        }));
         Ok(addr)
     }
 
@@ -204,11 +205,11 @@ impl<'a, const N_PAGES: usize, const PAGE_SIZE: usize, const MIN_GAP_SIZE: usize
         if !self.is_space_at(addr, length) {
             return Err("no space available there");
         }
-        self.mappings.insert(MapEntry {
+        debug_assert!(self.mappings.insert(MapEntry {
             addr,
             length,
             source: Some(source),
-        });
+        }));
 
         Ok(())
     }
@@ -220,12 +221,16 @@ impl<'a, const N_PAGES: usize, const PAGE_SIZE: usize, const MIN_GAP_SIZE: usize
     ///
     /// # Panics
     /// todo
-    pub fn remove_mapping<D: DataSource>(
-        &self,
-        source: &D,
-        start: VirtualAddress,
-    ) -> Result<(), AsError> {
-        todo!()
+    pub fn remove_mapping(&mut self, start: VirtualAddress) -> Result<(), AsError> {
+        if !self.mappings.remove(&MapEntry {
+            addr: start,
+            length: PAGE_SIZE,
+            source: None,
+        }) {
+            return Err("no mapping at that address to remove");
+        }
+
+        Ok(())
     }
 
     /// Look up the `DataSource` and offset within that `DataSource` for a
@@ -258,7 +263,8 @@ mod flags {
     /// # use reedos_address_space::Flags;
     /// let flags = Flags::build()
     ///     .toggle_read()
-    ///     .toggle_write();
+    ///     .toggle_write()
+    ///     .validate();
     /// ```
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
     #[allow(clippy::struct_excessive_bools)] // clippy is wrong: bools are more readable than enums
@@ -672,5 +678,38 @@ mod tests {
 
         assert!(space.add_mapping_at(20, &source, 20).is_err());
         space.assert_valid();
+    }
+
+    #[test]
+    fn remove_mapping_works() -> Result<(), AsError> {
+        let mut space = AddressSpace::<10, 20>::new("test space");
+        let source = ProxyDs::<16>::new();
+
+        space.mappings.insert(MapEntry {
+            addr: 20,
+            length: 20,
+            source: Some(&source),
+        });
+
+        space.mappings.insert(MapEntry {
+            addr: 60,
+            length: 20,
+            source: Some(&source),
+        });
+
+        space.mappings.insert(MapEntry {
+            addr: 100,
+            length: 20,
+            source: Some(&source),
+        });
+
+        space.remove_mapping(60)?;
+
+        assert_eq!(space.mappings.len(), 2);
+
+        assert_eq!(space.mappings.first().expect("first exists").addr, 20);
+        assert_eq!(space.mappings.last().expect("last exists").addr, 100);
+
+        Ok(())
     }
 }
